@@ -43,6 +43,7 @@ def main():
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     t0 = time.monotonic()
     seq = 0
+    q_prev, t_prev = None, None
     print(f"가짜 워치 → {args.host}:{args.port}")
     while True:
         t = time.monotonic() - t0
@@ -64,7 +65,19 @@ def main():
             return None
 
         motion = burst(1.0, +1) or burst(2.5, +1) or burst(5.5, -1) or (0.0, 0.0, 0.0)
-        gyro = (0.0, 0.0, 9.0) if 4.0 <= c < 4.15 else (0.0, 0.0, 0.0)
+        # 자세 변화에서 계산한 실제 각속도(워치 좌표): w = 2 * (q_prev^-1 * q).xyz / dt
+        body_w = (0.0, 0.0, 0.0)
+        if q_prev is not None and t > t_prev:
+            pw, px, py, pz = q_prev[0], -q_prev[1], -q_prev[2], -q_prev[3]
+            w, x, y, z = q
+            rx = pw * x + px * w + py * z - pz * y
+            ry = pw * y - px * z + py * w + pz * x
+            rz = pw * z + px * y - py * x + pz * w
+            dt = t - t_prev
+            body_w = (2 * rx / dt, 2 * ry / dt, 2 * rz / dt)
+        q_prev, t_prev = q, t
+        slash = (0.0, 0.0, 9.0) if 4.0 <= c < 4.15 else (0.0, 0.0, 0.0)
+        gyro = tuple(a + b for a, b in zip(body_w, slash))
         drawn = button
 
         if args.format == "igeo1":

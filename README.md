@@ -71,7 +71,7 @@ python pc\sender_sim.py
 | `THRUST_ACCEL_RAW` | 10 m/s² | 내지르기(발검·찌르기) 판정 민감도 (낮추면 잘 걸림). 실행 시 `--thrust 8` 처럼 바꿀 수 있음 |
 | `PULL_ACCEL_RAW` | 10 m/s² | 당기기(회수) 판정 민감도. 실행 시 `--pull 8` |
 | `THRUST_ACCEL_LIN` / `PULL_ACCEL_LIN` | 3 m/s² | 옛 워치 앱(원본 가속도 없이 보내는 버전)을 쓸 때의 기준 |
-| `GRAVITY_TAU` | 0.3 s | 원본 가속도에서 중력을 걸러내는 시간상수 |
+| `GRAVITY_TAU` | 1.0 s | 자이로로 추적하는 중력 방향을 원본 가속도 쪽으로 되돌리는 시간상수 |
 | `GESTURE_COOLDOWN` | 0.7 s | 동작 직후 다음 동작을 무시하는 시간. 찌른 뒤 팔이 멈출 때 회수로 오인되면 늘린다 |
 | `SLASH_GYRO` | 7 rad/s | 베기 판정 민감도 |
 | `SMOOTH` | 0.25 | 움직임 부드러움 (작을수록 부드럽지만 느림) |

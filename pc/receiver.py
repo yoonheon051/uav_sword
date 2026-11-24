@@ -81,7 +81,7 @@ class SwordState:
     PULL_ACCEL_RAW = 10.0            # 회수 (새 앱)
     THRUST_ACCEL_LIN = 3.0           # 찌르기/발검 (옛 앱)
     PULL_ACCEL_LIN = 3.0             # 회수 (옛 앱)
-    GRAVITY_TAU = 0.3                # 원본 가속도에서 중력을 분리하는 시간상수 (s)
+    GRAVITY_TAU = 1.0                # 중력 추정을 원본 가속도 쪽으로 천천히 되돌리는 시간상수 (s)
     SLASH_GYRO = 7.0                 # 베기 판정: 각속도 크기 (rad/s)
     GESTURE_COOLDOWN = 0.7           # 동작 하나 뒤 다음 동작을 무시하는 시간 (s)
                                      # 팔을 내지르면 멈출 때 반대 방향 가속이 생기는데,
@@ -117,7 +117,7 @@ class SwordState:
         self.thrust_accel = self.THRUST_ACCEL_LIN   # 지금 쓰는 기준 (패킷 종류에 따라)
         self.pull_accel = self.PULL_ACCEL_LIN
         self.raw_mode = False
-        self.grav_lp = None          # 세계 좌표 원본 가속도의 저역통과 = 중력 추정
+        self.grav_dev = None         # 워치 좌표계에서 본 중력 방향 추정 (자이로로 추적)
         self.last_t_ms = None
 
     def _event(self, now, name):
@@ -186,25 +186,32 @@ class SwordState:
             raw = pkt.get("raw")
             self.raw_mode = raw is not None
             if raw is not None:
-                # 원본 가속도(중력 포함)를 세계 좌표로 돌린 뒤, 천천히 변하는 성분(=중력)을 빼서
-                # 손이 실제로 움직인 가속도만 남긴다.
-                a_world = rotate_z(quat_rotate(q, raw), -self.yaw0)
+                # 워치의 자세 값(q)은 빠르게 내지를 때 가속을 '기울어짐'으로 착각해서
+                # 그걸로 중력을 빼면 손 움직임까지 지워진다. 그래서 q를 쓰지 않고,
+                # 워치 좌표계에서 중력 방향을 자이로로 직접 돌려가며 추적한다.
+                #   중력(워치 좌표) 변화: dg/dt = -w x g   (w = 자이로)
+                # 그리고 아주 천천히(GRAVITY_TAU) 원본 가속도 쪽으로 보정해 오차가 쌓이지 않게 한다.
                 dt = 0.01
                 if self.last_t_ms is not None:
                     dt = min(max((pkt["t_ms"] - self.last_t_ms) / 1000.0, 0.001), 0.1)
                 self.last_t_ms = pkt["t_ms"]
-                if self.grav_lp is None:
-                    self.grav_lp = a_world
-                alpha = dt / (self.GRAVITY_TAU + dt)
-                self.grav_lp = lerp(self.grav_lp, a_world, alpha)
-                lin_world = tuple(a - g for a, g in zip(a_world, self.grav_lp))
+                g = self.grav_dev if self.grav_dev is not None else raw
+                w = pkt["gyro"]
+                wxg = (w[1] * g[2] - w[2] * g[1], w[2] * g[0] - w[0] * g[2], w[0] * g[1] - w[1] * g[0])
+                g = tuple(gc - dt * c for gc, c in zip(g, wxg))
+                g = lerp(g, raw, dt / (self.GRAVITY_TAU + dt))
+                self.grav_dev = g
+                lin_dev = tuple(a - b for a, b in zip(raw, g))
+                # 손끝 방향 가속 = 워치 좌표의 팔뚝 축 성분 (자세 값과 무관)
+                forward_accel = dot(lin_dev, self.forearm_axis)
                 base_t, base_p = self.THRUST_ACCEL_RAW, self.PULL_ACCEL_RAW
             else:
                 lin_world = rotate_z(quat_rotate(q, pkt["lin"]), -self.yaw0)
+                forward_accel = dot(lin_world, d)
                 base_t, base_p = self.THRUST_ACCEL_LIN, self.PULL_ACCEL_LIN
             self.thrust_accel = self.thrust_override if self.thrust_override is not None else base_t
             self.pull_accel = self.pull_override if self.pull_override is not None else base_p
-            forward_accel = dot(lin_world, d)   # +: 손끝 쪽으로 내지름, -: 몸 쪽으로 당김
+            # forward_accel  +: 손끝 쪽으로 내지름, -: 몸 쪽으로 당김
             self.fwd_hist.append((now, forward_accel))
             while self.fwd_hist and now - self.fwd_hist[0][0] > 1.0:
                 self.fwd_hist.pop(0)
