@@ -21,11 +21,22 @@ def quat_from_yaw_pitch(yaw, pitch):
     return (cy * cp, -sy * sp, cy * sp, sy * cp)
 
 
+def rotate_inv(q, v):
+    """세계 좌표 벡터 v를 워치 좌표로 (q의 역회전)."""
+    w, x, y, z = q
+    x, y, z = -x, -y, -z
+    vx, vy, vz = v
+    tx, ty, tz = 2 * (y * vz - z * vy), 2 * (z * vx - x * vz), 2 * (x * vy - y * vx)
+    return (vx + w * tx + (y * tz - z * ty), vy + w * ty + (z * tx - x * tz), vz + w * tz + (x * ty - y * tx))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=5005)
     ap.add_argument("--duration", type=float, default=0, help="N초 후 종료 (0 = 계속)")
+    ap.add_argument("--format", choices=["igeo1", "igeo2"], default="igeo2",
+                    help="igeo2 = 새 워치 앱(원본 가속도 포함), igeo1 = 옛 워치 앱")
     ap.add_argument("--yaw-offset", type=float, default=40, help="워치의 임의 기준 방향 (도) — 보정 테스트용")
     args = ap.parse_args()
 
@@ -52,13 +63,26 @@ def main():
                 return (-25.0 * sign, 0.0, 0.0)
             return None
 
-        lin = burst(1.0, +1) or burst(2.5, +1) or burst(5.5, -1) or (0.0, 0.0, 0.0)
+        motion = burst(1.0, +1) or burst(2.5, +1) or burst(5.5, -1) or (0.0, 0.0, 0.0)
         gyro = (0.0, 0.0, 9.0) if 4.0 <= c < 4.15 else (0.0, 0.0, 0.0)
         drawn = button
 
+        if args.format == "igeo1":
+            # 옛 앱: 기기가 걸러준 선형가속도 (실제 워치4처럼 최대 4 정도)
+            lin = tuple(c * 0.16 for c in motion)
+            head = "IGEO1"
+            tail = ""
+        else:
+            # 새 앱: 원본 가속도 = 중력(워치 좌표) + 손 움직임
+            lin = tuple(c * 0.16 for c in motion)
+            g = rotate_inv(q, (0.0, 0.0, 9.81))
+            raw = tuple(a + b for a, b in zip(g, motion))
+            head = "IGEO2"
+            tail = f",{raw[0]:.3f},{raw[1]:.3f},{raw[2]:.3f}"
         msg = (
-            f"IGEO1,{seq},{int(t * 1000)},{q[0]:.5f},{q[1]:.5f},{q[2]:.5f},{q[3]:.5f},"
+            f"{head},{seq},{int(t * 1000)},{q[0]:.5f},{q[1]:.5f},{q[2]:.5f},{q[3]:.5f},"
             f"{gyro[0]:.4f},{gyro[1]:.4f},{gyro[2]:.4f},{lin[0]:.3f},{lin[1]:.3f},{lin[2]:.3f},{drawn}"
+            + tail
         )
         sock.sendto(msg.encode("ascii"), (args.host, args.port))
         seq += 1

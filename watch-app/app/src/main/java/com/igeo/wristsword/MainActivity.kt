@@ -33,11 +33,14 @@ import java.util.Locale
  * 손목 자세(쿼터니언) + 자이로 + 선형가속도를 UDP로 PC에 보내는 앱.
  *
  * 패킷 형식 (CSV 한 줄):
- *   IGEO1,seq,t_ms,qw,qx,qy,qz,gx,gy,gz,lax,lay,laz,drawn
+ *   IGEO2,seq,t_ms,qw,qx,qy,qz,gx,gy,gz,lax,lay,laz,drawn,ax,ay,az
  *   - q   : 워치 좌표계 -> 세계 좌표계 회전 (세계 Z축 = 위쪽)
  *   - g   : 자이로 (rad/s, 워치 좌표계)
- *   - la  : 중력 뺀 선형가속도 (m/s^2, 워치 좌표계)
- *   - drawn: 1 = 발검(검을 띄움), 0 = 회수
+ *   - la  : 중력 뺀 선형가속도 (m/s^2, 워치 좌표계) — 기기가 걸러서 최대치가 작게 나옴
+ *   - drawn: 발검/회수 버튼 값 (누를 때마다 0 <-> 1)
+ *   - a   : 원본 가속도계 값 (m/s^2, 중력 포함, 워치 좌표계) — 손동작 판정에 사용
+ *
+ * 패킷은 원본 가속도계 이벤트마다 보낸다 (가속도 순간 최대치를 놓치지 않도록).
  */
 class MainActivity : Activity(), SensorEventListener {
 
@@ -74,6 +77,9 @@ class MainActivity : Activity(), SensorEventListener {
     private val quat = FloatArray(4)
     private val gyro = FloatArray(3)
     private val lin = FloatArray(3)
+    private val acc = FloatArray(3)
+    private var hasRawAccel = false
+    private var hasQuat = false      // 첫 자세 값이 오기 전엔 보내지 않음
 
     private lateinit var statusText: TextView
     private lateinit var hostInput: EditText
@@ -177,7 +183,7 @@ class MainActivity : Activity(), SensorEventListener {
                 runOnUiThread { stopStreaming() }
                 return@post
             }
-            seq = 0; sendErrors = 0
+            seq = 0; sendErrors = 0; hasQuat = false
             rateStart = SystemClock.elapsedRealtime(); rateCount = 0
             requestWifi(handler)
             registerSensors(handler)
@@ -254,6 +260,8 @@ class MainActivity : Activity(), SensorEventListener {
             ?: sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
         val gy = sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE)
         val la = sensorManager.getDefaultSensor(Sensor.TYPE_LINEAR_ACCELERATION)
+        val ac = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
+        hasRawAccel = ac != null
 
         if (rv == null) {
             setStatus("회전 센서를 찾을 수 없음")
@@ -261,7 +269,7 @@ class MainActivity : Activity(), SensorEventListener {
         }
         // Game Rotation Vector: 지자기를 안 써서 실내 철골/전자기기 근처에서도 덜 튄다.
         // 대신 북쪽 기준이 없으므로 PC에서 '정면 보정(c)'을 해야 한다.
-        for (s in listOfNotNull(rv, gy, la)) {
+        for (s in listOfNotNull(rv, gy, la, ac)) {
             sensorManager.registerListener(this, s, SAMPLE_PERIOD_US, handler)
         }
     }
@@ -271,9 +279,14 @@ class MainActivity : Activity(), SensorEventListener {
         when (event.sensor.type) {
             Sensor.TYPE_GYROSCOPE -> System.arraycopy(event.values, 0, gyro, 0, 3)
             Sensor.TYPE_LINEAR_ACCELERATION -> System.arraycopy(event.values, 0, lin, 0, 3)
+            Sensor.TYPE_ACCELEROMETER -> {
+                System.arraycopy(event.values, 0, acc, 0, 3)
+                send(event.timestamp / 1_000_000L)
+            }
             Sensor.TYPE_GAME_ROTATION_VECTOR, Sensor.TYPE_ROTATION_VECTOR -> {
                 SensorManager.getQuaternionFromVector(quat, event.values) // [w, x, y, z]
-                send(event.timestamp / 1_000_000L)
+                hasQuat = true
+                if (!hasRawAccel) send(event.timestamp / 1_000_000L)
             }
         }
     }
@@ -281,16 +294,18 @@ class MainActivity : Activity(), SensorEventListener {
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
 
     private fun send(tMs: Long) {
+        if (!hasQuat) return
         val s = socket ?: return
         val t = target ?: return
         val msg = String.format(
             Locale.US,
-            "IGEO1,%d,%d,%.5f,%.5f,%.5f,%.5f,%.4f,%.4f,%.4f,%.3f,%.3f,%.3f,%d",
+            "IGEO2,%d,%d,%.5f,%.5f,%.5f,%.5f,%.4f,%.4f,%.4f,%.3f,%.3f,%.3f,%d,%.3f,%.3f,%.3f",
             seq++, tMs,
             quat[0], quat[1], quat[2], quat[3],
             gyro[0], gyro[1], gyro[2],
             lin[0], lin[1], lin[2],
-            if (drawn) 1 else 0
+            if (drawn) 1 else 0,
+            acc[0], acc[1], acc[2]
         ).toByteArray()
 
         try {
