@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.pyc
+
+# Android / Gradle
+.gradle/
+build/
+local.properties
+.idea/
+*.iml
+captures/
+.externalNativeBuild/
+.cxx/
+*.apk
+*.aab

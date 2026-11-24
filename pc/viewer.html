@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>이기어검 뷰어</title>
+<style>
+  :root { --bg:#0f1115; --panel:#181b22; --text:#e6e6e6; --dim:#8a8f99; --sword:#cfe3ff; --glow:#6aa8ff; --hot:#ff6a5a; --grid:#333946; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:14px/1.5 system-ui, sans-serif; }
+  header { display:flex; align-items:center; gap:12px; padding:12px 16px; flex-wrap:wrap; }
+  h1 { font-size:18px; margin:0; font-weight:600; letter-spacing:.05em; }
+  .pill { padding:2px 10px; border-radius:999px; background:var(--panel); color:var(--dim); font-size:12px; }
+  .pill.on { color:#7ee787; }
+  .pill.hot { color:var(--hot); }
+  button { background:#2b3140; color:var(--text); border:0; border-radius:8px; padding:6px 12px; cursor:pointer; font:inherit; }
+  button:hover { background:#38405a; }
+  main { display:grid; grid-template-columns: 1fr 280px; gap:12px; padding:0 16px 16px; }
+  @media (max-width: 800px) { main { grid-template-columns: 1fr; } }
+  canvas { width:100%; background:var(--panel); border-radius:12px; display:block; }
+  .side { display:flex; flex-direction:column; gap:12px; }
+  .card { background:var(--panel); border-radius:12px; padding:12px 14px; }
+  .card h2 { font-size:12px; color:var(--dim); margin:0 0 6px; font-weight:500; }
+  .mono { font-family: ui-monospace, Consolas, monospace; font-size:13px; }
+  ul { list-style:none; margin:0; padding:0; }
+  li { padding:2px 0; }
+  li .ago { color:var(--dim); font-size:12px; margin-left:6px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>以氣御劍</h1>
+  <span id="conn" class="pill">연결 안 됨</span>
+  <span id="mode" class="pill">회수</span>
+  <button id="cal" title="지금 손이 가리키는 방향을 정면으로">정면 보정</button>
+</header>
+<main>
+  <canvas id="view" width="900" height="600"></canvas>
+  <div class="side">
+    <canvas id="top" width="280" height="280"></canvas>
+    <div class="card"><h2>드론 목표점 (m)</h2><div id="sp" class="mono">-</div></div>
+    <div class="card"><h2>손목 방향</h2><div id="dir" class="mono">-</div></div>
+    <div class="card"><h2>최근 동작</h2><ul id="events"></ul></div>
+  </div>
+</main>
+<script>
+const view = document.getElementById('view'), vx = view.getContext('2d');
+const top_ = document.getElementById('top'), tx = top_.getContext('2d');
+let S = null;
+
+document.getElementById('cal').onclick = () => fetch('/calibrate', {method:'POST'});
+
+// 사용자 뒤쪽 위에서 바라보는 간단한 원근 투영
+// 사용자 오른쪽 뒤 위에서 (1.2, 0, 1.0) 지점을 바라봄
+const CAM = (() => {
+  const pos = [-2.6, -3.6, 3.2], look = [1.2, 0, 1.0];
+  const dx = look[0]-pos[0], dy = look[1]-pos[1], dz = look[2]-pos[2];
+  return {pos, yaw: Math.atan2(dy, dx), pitch: Math.atan2(dz, Math.hypot(dx, dy)), f: 620};
+})();
+function project(p) {
+  let x = p[0]-CAM.pos[0], y = p[1]-CAM.pos[1], z = p[2]-CAM.pos[2];
+  const cy = Math.cos(-CAM.yaw), sy = Math.sin(-CAM.yaw);
+  [x, y] = [cy*x - sy*y, sy*x + cy*y];          // 카메라 yaw
+  const cp = Math.cos(-CAM.pitch), sp = Math.sin(-CAM.pitch);
+  [x, z] = [cp*x - sp*z, sp*x + cp*z];          // 카메라 pitch
+  if (x < 0.1) return null;
+  return [view.width/2 - CAM.f * y / x, view.height/2 - CAM.f * z / x];
+}
+function line3(a, b, color, w) {
+  const A = project(a), B = project(b); if (!A || !B) return;
+  vx.strokeStyle = color; vx.lineWidth = w; vx.beginPath(); vx.moveTo(...A); vx.lineTo(...B); vx.stroke();
+}
+
+function drawView() {
+  vx.clearRect(0, 0, view.width, view.height);
+  const css = getComputedStyle(document.documentElement);
+  const grid = css.getPropertyValue('--grid');
+  for (let i = -2; i <= 6; i++) { line3([i, -4, 0], [i, 4, 0], grid, 1); }
+  for (let j = -4; j <= 4; j++) { line3([-2, j, 0], [6, j, 0], grid, 1); }
+  // 사람 (막대)
+  line3([0,0,0], [0,0,1.45], '#8a8f99', 3);
+  const H = project([0,0,1.6]); if (H) { vx.fillStyle='#8a8f99'; vx.beginPath(); vx.arc(...H, 9, 0, 7); vx.fill(); }
+  if (!S) return;
+  const d = S.direction, t = [S.setpoint.x, S.setpoint.y, S.setpoint.z];
+  // 팔이 가리키는 방향 (가는 선)
+  if (S.drawn) line3([0,0,1.4], t, 'rgba(106,168,255,.25)', 1);
+  // 검: 칼끝이 손목 방향을 향함
+  const L = 0.45, G = 0.12;
+  const tip = [t[0]+d[0]*L, t[1]+d[1]*L, t[2]+d[2]*L];
+  const guard = [t[0]-d[0]*L*0.6, t[1]-d[1]*L*0.6, t[2]-d[2]*L*0.6];
+  const pommel = [guard[0]-d[0]*G*1.6, guard[1]-d[1]*G*1.6, guard[2]-d[2]*G*1.6];
+  // 코등이: 검 방향과 수직인 수평 벡터
+  let side = [-d[1], d[0], 0]; const n = Math.hypot(...side) || 1; side = side.map(c => c/n*G);
+  const glow = S.thrusting ? css.getPropertyValue('--hot') : css.getPropertyValue('--glow');
+  vx.shadowColor = glow; vx.shadowBlur = S.thrusting ? 28 : 14;
+  line3(guard, tip, css.getPropertyValue('--sword'), 6);
+  vx.shadowBlur = 0;
+  line3([guard[0]+side[0], guard[1]+side[1], guard[2]], [guard[0]-side[0], guard[1]-side[1], guard[2]], '#c9a45c', 5);
+  line3(guard, pommel, '#6b4f2a', 5);
+  // 바닥 그림자
+  line3([guard[0], guard[1], 0.001], [tip[0], tip[1], 0.001], 'rgba(0,0,0,.45)', 6);
+}
+
+function drawTop() {
+  const W = top_.width, s = 40, cx = W/2 - 40, cy = W/2;
+  tx.clearRect(0, 0, W, W);
+  tx.strokeStyle = '#262a33';
+  for (let r = 1; r <= 3; r++) { tx.beginPath(); tx.arc(cx, cy, r*s, 0, 7); tx.stroke(); }
+  tx.fillStyle = '#8a8f99'; tx.fillText('위에서 본 모습 (위쪽 = 정면)', 8, 16);
+  tx.beginPath(); tx.arc(cx, cy, 6, 0, 7); tx.fill();
+  if (!S) return;
+  // 화면 위쪽 = +X(정면), 왼쪽 = +Y
+  const px = cx - S.setpoint.y * s, py = cy - S.setpoint.x * s;
+  tx.strokeStyle = S.thrusting ? '#ff6a5a' : '#6aa8ff'; tx.lineWidth = 3;
+  tx.beginPath(); tx.moveTo(px, py); tx.lineTo(px - S.direction[1]*24, py - S.direction[0]*24); tx.stroke();
+  tx.fillStyle = tx.strokeStyle; tx.beginPath(); tx.arc(px, py, 5, 0, 7); tx.fill();
+}
+
+function updatePanel() {
+  const c = document.getElementById('conn');
+  c.textContent = S.connected ? `연결 · ${S.rate_hz} Hz · 손실 ${S.lost}` : '연결 안 됨';
+  c.className = 'pill' + (S.connected ? ' on' : '');
+  const m = document.getElementById('mode');
+  m.textContent = S.thrusting ? '찌르기!' : (S.drawn ? '발검' : '회수');
+  m.className = 'pill' + (S.thrusting ? ' hot' : (S.drawn ? ' on' : ''));
+  const sp = S.setpoint;
+  document.getElementById('sp').textContent = `x ${sp.x.toFixed(2)}  y ${sp.y.toFixed(2)}  z ${sp.z.toFixed(2)}\nyaw ${sp.yaw_deg.toFixed(0)}°`;
+  document.getElementById('sp').style.whiteSpace = 'pre';
+  document.getElementById('dir').textContent = `yaw ${S.yaw_deg.toFixed(1)}°  pitch ${S.pitch_deg.toFixed(1)}°`;
+  document.getElementById('events').innerHTML = S.events.slice().reverse()
+    .map(e => `<li>${e.name}<span class="ago">${e.ago.toFixed(1)}초 전</span></li>`).join('');
+}
+
+async function tick() {
+  try { S = await (await fetch('/state')).json(); updatePanel(); }
+  catch (e) { document.getElementById('conn').textContent = '수신기 꺼짐'; }
+  drawView(); drawTop();
+  setTimeout(tick, 33);
+}
+tick();
+</script>
+</body>
+</html>
