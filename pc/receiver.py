@@ -74,8 +74,10 @@ class SwordState:
     REACH = 1.5                      # 평소 손끝에서 검까지 거리
     THRUST_REACH = 3.0               # 찌르기 때 거리
     THRUST_TIME = 0.5                # 찌르기 지속 시간 (s)
-    THRUST_ACCEL = 12.0              # 찌르기/발검 판정: 손끝 방향 가속도 (m/s^2)
-    PULL_ACCEL = 12.0                # 회수 판정: 몸 쪽(손끝 반대) 가속도 (m/s^2)
+    # 갤럭시 워치4의 선형가속도 센서는 걸러진 값이라 세게 내질러도 4 m/s^2 안팎만 나온다.
+    # 실행할 때 --thrust / --pull 로 바꿀 수 있다.
+    THRUST_ACCEL = 3.0               # 찌르기/발검 판정: 손끝 방향 가속도 (m/s^2)
+    PULL_ACCEL = 3.0                 # 회수 판정: 몸 쪽(손끝 반대) 가속도 (m/s^2)
     SLASH_GYRO = 7.0                 # 베기 판정: 각속도 크기 (rad/s)
     GESTURE_COOLDOWN = 0.7           # 동작 하나 뒤 다음 동작을 무시하는 시간 (s)
                                      # 팔을 내지르면 멈출 때 반대 방향 가속이 생기는데,
@@ -319,6 +321,10 @@ def main():
     ap.add_argument("--port", type=int, default=5005, help="UDP 포트 (워치 앱과 같아야 함)")
     ap.add_argument("--web-port", type=int, default=8000)
     ap.add_argument("--hand", choices=["left", "right"], default="left", help="워치를 찬 손")
+    ap.add_argument("--thrust", type=float, default=SwordState.THRUST_ACCEL,
+                    help="내지르기(발검·찌르기) 판정 가속도 m/s^2 (낮을수록 잘 걸림)")
+    ap.add_argument("--pull", type=float, default=SwordState.PULL_ACCEL,
+                    help="당기기(회수) 판정 가속도 m/s^2 (낮을수록 잘 걸림)")
     ap.add_argument("--no-web", action="store_true", help="브라우저 화면 없이 콘솔만")
     ap.add_argument("--duration", type=float, default=0, help="N초 후 자동 종료 (테스트용)")
     args = ap.parse_args()
@@ -329,6 +335,8 @@ def main():
             stream.reconfigure(errors="replace")
 
     state = SwordState(hand=args.hand)
+    state.THRUST_ACCEL = args.thrust
+    state.PULL_ACCEL = args.pull
     stop = threading.Event()
     threading.Thread(target=udp_loop, args=(state, args.port, stop), daemon=True).start()
     print(f"UDP {args.port} 수신 대기 중 (워치: {args.hand}손)")
@@ -360,7 +368,7 @@ def main():
                 f"{'발검' if s['drawn'] else '회수'}  "
                 f"방향 yaw {s['yaw_deg']:6.1f}° pitch {s['pitch_deg']:5.1f}°  "
                 f"목표 ({sp['x']:5.2f}, {sp['y']:5.2f}, {sp['z']:5.2f})  "
-                f"가속 +{s['fwd_max']:4.1f}/{s['fwd_min']:5.1f} (기준 ±{state.THRUST_ACCEL:.0f})"
+                f"가속 +{s['fwd_max']:4.1f}/{s['fwd_min']:5.1f} (기준 +{state.THRUST_ACCEL:.1f}/-{state.PULL_ACCEL:.1f})"
                 + ("  << 찌르기" if s["thrusting"] else "")
             )
             with state.lock:
