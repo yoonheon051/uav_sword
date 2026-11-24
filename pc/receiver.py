@@ -77,8 +77,13 @@ class SwordState:
     # 손동작 판정 기준: 손끝 방향 가속도 (m/s^2). 실행할 때 --thrust / --pull 로 바꿀 수 있다.
     # - 새 워치 앱(IGEO2): 원본 가속도계 값을 PC에서 직접 걸러 쓴다. 손목을 툭 치면 20 이상 나온다.
     # - 옛 워치 앱(IGEO1): 기기가 걸러준 선형가속도라 세게 내질러도 4 안팎만 나온다.
-    THRUST_ACCEL_RAW = 10.0          # 찌르기/발검 (새 앱)
-    PULL_ACCEL_RAW = 10.0            # 회수 (새 앱)
+    # 새 앱은 가속도가 아니라 '손목 속도'로 판정한다.
+    # 팔을 내지르면 출발할 때보다 끝에서 멈출 때 가속(반대 방향)이 더 세게 나와서,
+    # 가속도 최대치로 판정하면 내지르기가 '당기기'로 잡힌다. 속도는 내지르는 동안
+    # 계속 손끝 방향(+)이라 방향이 헷갈리지 않는다.
+    THRUST_VEL = 0.8                 # 찌르기/발검: 손끝 방향 속도 (m/s)
+    PULL_VEL = 0.8                   # 회수: 몸 쪽 속도 (m/s)
+    VEL_TAU = 0.3                    # 속도 적분이 0으로 서서히 돌아오는 시간상수 (s, 누적 오차 방지)
     THRUST_ACCEL_LIN = 3.0           # 찌르기/발검 (옛 앱)
     PULL_ACCEL_LIN = 3.0             # 회수 (옛 앱)
     GRAVITY_TAU = 1.0                # 중력 추정을 원본 가속도 쪽으로 천천히 되돌리는 시간상수 (s)
@@ -119,6 +124,7 @@ class SwordState:
         self.raw_mode = False
         self.grav_dev = None         # 워치 좌표계에서 본 중력 방향 추정 (자이로로 추적)
         self.last_t_ms = None
+        self.vel = 0.0               # 손끝 방향 속도 추정 (m/s)
 
     def _event(self, now, name):
         self.event_count += 1
@@ -204,28 +210,33 @@ class SwordState:
                 lin_dev = tuple(a - b for a, b in zip(raw, g))
                 # 손끝 방향 가속 = 워치 좌표의 팔뚝 축 성분 (자세 값과 무관)
                 forward_accel = dot(lin_dev, self.forearm_axis)
-                base_t, base_p = self.THRUST_ACCEL_RAW, self.PULL_ACCEL_RAW
+                # 가속도를 적분해 속도로 (오래된 값은 VEL_TAU로 서서히 잊음)
+                self.vel = self.vel * math.exp(-dt / self.VEL_TAU) + forward_accel * dt
+                metric = self.vel
+                base_t, base_p = self.THRUST_VEL, self.PULL_VEL
             else:
                 lin_world = rotate_z(quat_rotate(q, pkt["lin"]), -self.yaw0)
                 forward_accel = dot(lin_world, d)
+                metric = forward_accel
                 base_t, base_p = self.THRUST_ACCEL_LIN, self.PULL_ACCEL_LIN
             self.thrust_accel = self.thrust_override if self.thrust_override is not None else base_t
             self.pull_accel = self.pull_override if self.pull_override is not None else base_p
-            # forward_accel  +: 손끝 쪽으로 내지름, -: 몸 쪽으로 당김
-            self.fwd_hist.append((now, forward_accel))
+            # metric  +: 손끝 쪽으로 내지름, -: 몸 쪽으로 당김
+            #         (새 앱: 속도 m/s, 옛 앱: 가속도 m/s^2)
+            self.fwd_hist.append((now, metric))
             while self.fwd_hist and now - self.fwd_hist[0][0] > 1.0:
                 self.fwd_hist.pop(0)
             gyro_mag = norm(pkt["gyro"])
 
             if now > self.gesture_block_until:
-                if not self.drawn and forward_accel > self.thrust_accel:
+                if not self.drawn and metric > self.thrust_accel:
                     # 회수 상태에서 내지르기 -> 발검
                     self._set_drawn(now, True, "내지르기")
-                elif self.drawn and forward_accel > self.thrust_accel:
+                elif self.drawn and metric > self.thrust_accel:
                     self.thrust_until = now + self.THRUST_TIME
                     self.gesture_block_until = self.thrust_until + 0.2
                     self._event(now, "찌르기")
-                elif self.drawn and forward_accel < -self.pull_accel:
+                elif self.drawn and metric < -self.pull_accel:
                     # 발검 상태에서 손목을 몸 쪽으로 당기기 -> 회수
                     self._set_drawn(now, False, "당기기")
                 elif self.drawn and gyro_mag > self.SLASH_GYRO:
@@ -256,8 +267,9 @@ class SwordState:
                 "drawn": self.drawn,
                 "thrusting": now < self.thrust_until,
                 # 최근 1초 동안 손끝 방향 가속도의 최대(+, 내지르기)와 최소(-, 당기기)
-                "fwd_max": round(max((a for _, a in self.fwd_hist), default=0.0), 1),
-                "fwd_min": round(min((a for _, a in self.fwd_hist), default=0.0), 1),
+                "fwd_max": round(max((a for _, a in self.fwd_hist), default=0.0), 2),
+                "fwd_min": round(min((a for _, a in self.fwd_hist), default=0.0), 2),
+                "metric": "속도" if self.raw_mode else "가속",
                 "direction": [round(c, 4) for c in self.direction],
                 "yaw_deg": round(yaw, 1),
                 "pitch_deg": round(pitch, 1),
@@ -364,10 +376,10 @@ def main():
     ap.add_argument("--web-port", type=int, default=8000)
     ap.add_argument("--hand", choices=["left", "right"], default="left", help="워치를 찬 손")
     ap.add_argument("--thrust", type=float, default=None,
-                    help="내지르기(발검·찌르기) 판정 가속도 m/s^2 (낮을수록 잘 걸림). "
-                         "기본: 새 워치 앱 10, 옛 앱 3")
+                    help="내지르기(발검·찌르기) 판정 기준 (낮을수록 잘 걸림). "
+                         "새 워치 앱: 손목 속도 m/s, 기본 0.8 / 옛 앱: 가속도 m/s^2, 기본 3")
     ap.add_argument("--pull", type=float, default=None,
-                    help="당기기(회수) 판정 가속도 m/s^2 (낮을수록 잘 걸림). 기본: 새 앱 10, 옛 앱 3")
+                    help="당기기(회수) 판정 기준 (낮을수록 잘 걸림). 새 앱: 속도 m/s 기본 0.8 / 옛 앱: 가속도 기본 3")
     ap.add_argument("--no-web", action="store_true", help="브라우저 화면 없이 콘솔만")
     ap.add_argument("--duration", type=float, default=0, help="N초 후 자동 종료 (테스트용)")
     args = ap.parse_args()
@@ -411,7 +423,7 @@ def main():
                 f"{'발검' if s['drawn'] else '회수'}  "
                 f"방향 yaw {s['yaw_deg']:6.1f}° pitch {s['pitch_deg']:5.1f}°  "
                 f"목표 ({sp['x']:5.2f}, {sp['y']:5.2f}, {sp['z']:5.2f})  "
-                f"가속 +{s['fwd_max']:4.1f}/{s['fwd_min']:5.1f} (기준 +{state.thrust_accel:.1f}/-{state.pull_accel:.1f}, {'원본' if state.raw_mode else '옛 앱'})"
+                f"{s['metric']} +{s['fwd_max']:4.2f}/{s['fwd_min']:5.2f} (기준 +{state.thrust_accel:.2f}/-{state.pull_accel:.2f}, {'원본' if state.raw_mode else '옛 앱'})"
                 + ("  << 찌르기" if s["thrusting"] else "")
             )
             with state.lock:

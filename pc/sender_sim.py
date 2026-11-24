@@ -57,10 +57,11 @@ def main():
         c = t % 8 if (t % 16) < 8 else -1   # 동작은 16초 중 앞 8초에만
 
         def burst(start, sign):
-            # 손끝(+X) 방향 가속 후 멈추면서 반대 방향 감속 (실제 팔 동작처럼)
-            if start <= c < start + 0.08:
-                return (25.0 * sign, 0.0, 0.0)
-            if start + 0.08 <= c < start + 0.16:
+            # 실제 팔 동작처럼: 출발은 길고 완만하게(+12, 0.15s), 멈춤은 짧고 세게(-25, 0.072s).
+            # 가속도 최대치만 보면 반대 방향이 더 커서, 방향 판정은 속도로 해야 한다.
+            if start <= c < start + 0.15:
+                return (12.0 * sign, 0.0, 0.0)
+            if start + 0.15 <= c < start + 0.222:
                 return (-25.0 * sign, 0.0, 0.0)
             return None
 

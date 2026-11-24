@@ -127,7 +127,7 @@ function updatePanel() {
   document.getElementById('sp').textContent = `x ${sp.x.toFixed(2)}  y ${sp.y.toFixed(2)}  z ${sp.z.toFixed(2)}\nyaw ${sp.yaw_deg.toFixed(0)}°`;
   document.getElementById('sp').style.whiteSpace = 'pre';
   document.getElementById('dir').textContent = `yaw ${S.yaw_deg.toFixed(1)}°  pitch ${S.pitch_deg.toFixed(1)}°
-손끝 가속(1초) +${S.fwd_max.toFixed(1)} / ${S.fwd_min.toFixed(1)}`;
+손끝 ${S.metric}(1초) +${S.fwd_max.toFixed(2)} / ${S.fwd_min.toFixed(2)}`;
   document.getElementById('dir').style.whiteSpace = 'pre';
   document.getElementById('events').innerHTML = S.events.slice().reverse()
     .map(e => `<li>${e.name}<span class="ago">${e.ago.toFixed(1)}초 전</span></li>`).join('');
