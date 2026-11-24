@@ -6,7 +6,7 @@
   2) 찌르기/베기 동작을 감지해서
   3) 검(나중엔 드론)의 목표 위치(setpoint)를 만든다.
 
-브라우저로 http://localhost:8000 을 열면 검이 움직이는 모습을 볼 수 있다.
+브라우저로 http://127.0.0.1:8000 을 열면 검이 움직이는 모습을 볼 수 있다.
 
 사용:
     python receiver.py                 # 왼손에 워치
@@ -74,8 +74,12 @@ class SwordState:
     REACH = 1.5                      # 평소 손끝에서 검까지 거리
     THRUST_REACH = 3.0               # 찌르기 때 거리
     THRUST_TIME = 0.5                # 찌르기 지속 시간 (s)
-    THRUST_ACCEL = 12.0              # 찌르기 판정: 정면 방향 가속도 (m/s^2)
+    THRUST_ACCEL = 12.0              # 찌르기/발검 판정: 손끝 방향 가속도 (m/s^2)
+    PULL_ACCEL = 12.0                # 회수 판정: 몸 쪽(손끝 반대) 가속도 (m/s^2)
     SLASH_GYRO = 7.0                 # 베기 판정: 각속도 크기 (rad/s)
+    GESTURE_COOLDOWN = 0.7           # 동작 하나 뒤 다음 동작을 무시하는 시간 (s)
+                                     # 팔을 내지르면 멈출 때 반대 방향 가속이 생기는데,
+                                     # 그걸 '회수'로 착각하지 않게 막는다.
     SMOOTH = 0.25                    # 목표 위치 저역통과 계수 (0~1, 작을수록 부드러움)
 
     def __init__(self, hand="left"):
@@ -95,7 +99,9 @@ class SwordState:
         self.direction = (1.0, 0.0, 0.0)
         self.target = self.HOME
         self.drawn = False
+        self.button_prev = None      # 워치 발검/회수 버튼 값 (바뀔 때마다 상태 토글)
         self.thrust_until = 0.0
+        self.gesture_block_until = 0.0
         self.events = []             # (id, time, name)
         self.event_count = 0
         self.last_rx = 0.0
@@ -104,6 +110,14 @@ class SwordState:
         self.event_count += 1
         self.events.append((self.event_count, now, name))
         self.events = self.events[-20:]
+
+    def _set_drawn(self, now, drawn, how):
+        if drawn == self.drawn:
+            return
+        self.drawn = drawn
+        self.thrust_until = 0.0
+        self.gesture_block_until = now + self.GESTURE_COOLDOWN
+        self._event(now, f"{'발검' if drawn else '회수'} ({how})")
 
     def request_calibration(self):
         with self.lock:
@@ -142,25 +156,38 @@ class SwordState:
             d = tuple(c / n for c in d)
             self.direction = d
 
-            # 발검/회수 상태 변화
-            drawn = bool(pkt["drawn"])
-            if drawn != self.drawn:
-                self._event(now, "발검" if drawn else "회수")
-                self.drawn = drawn
+            # 워치 버튼: 누를 때마다(값이 바뀔 때마다) 발검 <-> 회수 토글.
+            # 손동작으로도 상태가 바뀌므로 버튼 글자와 실제 상태가 어긋날 수 있지만,
+            # 버튼을 누르면 항상 '반대 상태'로 바뀐다.
+            button = bool(pkt["drawn"])
+            if self.button_prev is None:
+                self.drawn = button
+            elif button != self.button_prev:
+                self._set_drawn(now, not self.drawn, "버튼")
+            self.button_prev = button
 
-            # 동작 감지 (세계 좌표로 바꿔서 정면 성분을 본다)
+            # 동작 감지 (세계 좌표로 바꿔서 손끝 방향 성분을 본다)
             lin_world = rotate_z(quat_rotate(q, pkt["lin"]), -self.yaw0)
-            forward_accel = dot(lin_world, d)
+            forward_accel = dot(lin_world, d)   # +: 손끝 쪽으로 내지름, -: 몸 쪽으로 당김
             gyro_mag = norm(pkt["gyro"])
 
-            if drawn and forward_accel > self.THRUST_ACCEL and now > self.thrust_until:
-                self.thrust_until = now + self.THRUST_TIME
-                self._event(now, "찌르기")
-            elif drawn and gyro_mag > self.SLASH_GYRO and now > self.thrust_until:
-                if not self.events or self.events[-1][2] != "베기" or now - self.events[-1][1] > 0.4:
+            if now > self.gesture_block_until:
+                if not self.drawn and forward_accel > self.THRUST_ACCEL:
+                    # 회수 상태에서 내지르기 -> 발검
+                    self._set_drawn(now, True, "내지르기")
+                elif self.drawn and forward_accel > self.THRUST_ACCEL:
+                    self.thrust_until = now + self.THRUST_TIME
+                    self.gesture_block_until = self.thrust_until + 0.2
+                    self._event(now, "찌르기")
+                elif self.drawn and forward_accel < -self.PULL_ACCEL:
+                    # 발검 상태에서 손목을 몸 쪽으로 당기기 -> 회수
+                    self._set_drawn(now, False, "당기기")
+                elif self.drawn and gyro_mag > self.SLASH_GYRO:
+                    self.gesture_block_until = now + 0.4
                     self._event(now, "베기")
 
             # 목표 위치 계산
+            drawn = self.drawn
             if drawn:
                 reach = self.THRUST_REACH if now < self.thrust_until else self.REACH
                 raw = tuple(s + c * reach for s, c in zip(self.SHOULDER, d))
@@ -302,7 +329,7 @@ def main():
     if not args.no_web:
         server = ThreadingHTTPServer(("127.0.0.1", args.web_port), make_handler(state))
         threading.Thread(target=server.serve_forever, daemon=True).start()
-        print(f"화면: http://localhost:{args.web_port}")
+        print(f"화면: http://127.0.0.1:{args.web_port}")
 
     if sys.stdin and sys.stdin.isatty():
         def stdin_loop():

@@ -3,7 +3,8 @@
 워치 앱과 같은 형식의 패킷을 100Hz로 보낸다.
 
   - 손목이 좌우로 천천히 흔들리고 위아래로 조금 움직임
-  - 2초 후 발검, 4초마다 찌르기, 6초마다 베기
+  - 8초 주기: 1초 내지르기(발검) -> 2.5초 찌르기 -> 4초 베기 -> 5.5초 당기기(회수)
+  - 10초에 워치 버튼 누름(발검), 12초에 다시 누름(회수)
 """
 
 import argparse
@@ -40,11 +41,20 @@ def main():
         pitch = 0.25 * math.sin(t * 0.5)
         q = quat_from_yaw_pitch(yaw, pitch)
 
-        drawn = 1 if t > 2 else 0
-        # 찌르기: 4초마다 0.1초 동안 손끝 방향(+X, 워치 좌표)으로 큰 가속
-        lin = (25.0, 0.0, 0.0) if drawn and (t % 4) < 0.1 else (0.0, 0.0, 0.0)
-        # 베기: 6초마다 0.15초 동안 빠른 회전 (찌르기와 겹치지 않는 시점)
-        gyro = (0.0, 0.0, 9.0) if drawn and 3.0 < (t % 6) < 3.15 else (0.0, 0.0, 0.0)
+        button = 1 if (t % 16) >= 10 and (t % 16) < 12 else 0
+        c = t % 8 if (t % 16) < 8 else -1   # 동작은 16초 중 앞 8초에만
+
+        def burst(start, sign):
+            # 손끝(+X) 방향 가속 후 멈추면서 반대 방향 감속 (실제 팔 동작처럼)
+            if start <= c < start + 0.08:
+                return (25.0 * sign, 0.0, 0.0)
+            if start + 0.08 <= c < start + 0.16:
+                return (-25.0 * sign, 0.0, 0.0)
+            return None
+
+        lin = burst(1.0, +1) or burst(2.5, +1) or burst(5.5, -1) or (0.0, 0.0, 0.0)
+        gyro = (0.0, 0.0, 9.0) if 4.0 <= c < 4.15 else (0.0, 0.0, 0.0)
+        drawn = button
 
         msg = (
             f"IGEO1,{seq},{int(t * 1000)},{q[0]:.5f},{q[1]:.5f},{q[2]:.5f},{q[3]:.5f},"
