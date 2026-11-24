@@ -51,6 +51,11 @@ def main():
             break
         yaw = math.radians(args.yaw_offset) + 0.6 * math.sin(t * 0.8)
         pitch = 0.25 * math.sin(t * 0.5)
+        # 실제 워치4처럼: 내지르면 pitch가 잠깐 내려갔다 돌아오고, 당기면 잠깐 올라갔다 돌아온다.
+        cc = t % 8 if (t % 16) < 8 else -1
+        for start, sign in ((1.0, -1), (2.5, -1), (5.5, +1)):
+            if start <= cc < start + 0.4:
+                pitch += sign * math.radians(35) * math.sin(math.pi * (cc - start) / 0.4)
         q = quat_from_yaw_pitch(yaw, pitch)
 
         button = 1 if (t % 16) >= 10 and (t % 16) < 12 else 0
