@@ -105,6 +105,7 @@ class SwordState:
         self.events = []             # (id, time, name)
         self.event_count = 0
         self.last_rx = 0.0
+        self.fwd_hist = []           # (time, 손끝 방향 가속도) 최근 1초 — 감도 조정용
 
     def _event(self, now, name):
         self.event_count += 1
@@ -169,6 +170,9 @@ class SwordState:
             # 동작 감지 (세계 좌표로 바꿔서 손끝 방향 성분을 본다)
             lin_world = rotate_z(quat_rotate(q, pkt["lin"]), -self.yaw0)
             forward_accel = dot(lin_world, d)   # +: 손끝 쪽으로 내지름, -: 몸 쪽으로 당김
+            self.fwd_hist.append((now, forward_accel))
+            while self.fwd_hist and now - self.fwd_hist[0][0] > 1.0:
+                self.fwd_hist.pop(0)
             gyro_mag = norm(pkt["gyro"])
 
             if now > self.gesture_block_until:
@@ -209,6 +213,9 @@ class SwordState:
                 "lost": self.lost,
                 "drawn": self.drawn,
                 "thrusting": now < self.thrust_until,
+                # 최근 1초 동안 손끝 방향 가속도의 최대(+, 내지르기)와 최소(-, 당기기)
+                "fwd_max": round(max((a for _, a in self.fwd_hist), default=0.0), 1),
+                "fwd_min": round(min((a for _, a in self.fwd_hist), default=0.0), 1),
                 "direction": [round(c, 4) for c in self.direction],
                 "yaw_deg": round(yaw, 1),
                 "pitch_deg": round(pitch, 1),
@@ -352,7 +359,8 @@ def main():
                 f"[{conn} {s['rate_hz']:5.1f}Hz 손실 {s['lost']}] "
                 f"{'발검' if s['drawn'] else '회수'}  "
                 f"방향 yaw {s['yaw_deg']:6.1f}° pitch {s['pitch_deg']:5.1f}°  "
-                f"목표 ({sp['x']:5.2f}, {sp['y']:5.2f}, {sp['z']:5.2f})"
+                f"목표 ({sp['x']:5.2f}, {sp['y']:5.2f}, {sp['z']:5.2f})  "
+                f"가속 +{s['fwd_max']:4.1f}/{s['fwd_min']:5.1f} (기준 ±{state.THRUST_ACCEL:.0f})"
                 + ("  << 찌르기" if s["thrusting"] else "")
             )
             with state.lock:
