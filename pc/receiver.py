@@ -3,15 +3,20 @@
 
 갤럭시 워치에서 오는 UDP 패킷을 받아
   1) 손목이 가리키는 방향을 계산하고
-  2) 찌르기/베기 동작을 감지해서
+  2) 발검 · 찌르기 · 베기 · 회수 손동작을 판정해서
   3) 검(나중엔 드론)의 목표 위치(setpoint)를 만든다.
 
 브라우저로 http://127.0.0.1:8000 을 열면 검이 움직이는 모습을 볼 수 있다.
+(localhost로는 안 열리는 PC가 있으니 127.0.0.1을 쓴다.)
 
 사용:
-    python receiver.py                 # 왼손에 워치
-    python receiver.py --hand right    # 오른손에 워치
-    python receiver.py --no-web        # 콘솔 출력만
+    python receiver.py                        # 왼손에 워치, pitch 방식 판정
+    python receiver.py --hand right           # 오른손에 워치
+    python receiver.py --thrust 150 --pull 150  # 판정 기준 바꾸기 (°/s)
+    python receiver.py --mode velocity        # 손목 속도로 판정
+    python receiver.py --no-web               # 콘솔 출력만
+
+동작 흐름과 튜닝 값은 저장소의 README.md, 판정 방식이 바뀐 이유는 docs/devlog.md 참고.
 """
 
 import argparse

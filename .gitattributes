@@ -1,0 +1,4 @@
+# 줄바꿈을 저장소에서는 LF로 통일 (Windows에서 체크아웃하면 자동으로 CRLF)
+* text=auto
+*.png binary
+*.jpg binary
